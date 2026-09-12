@@ -5,17 +5,18 @@ from sqlmodel import SQLModel, Field, create_engine, Session, select
 
 app = FastAPI(title="Task API", version="2.0")
 
-# ---- Database model (the actual table) ----
 class Task(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
     done: bool = False
 
-# ---- Request body model (for creating tasks) ----
 class TaskCreate(BaseModel):
     title: str
 
-# ---- Database setup ----
+class TaskUpdate(BaseModel):
+    title: str
+    done: bool
+
 sqlite_file_name = "tasks.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 engine = create_engine(sqlite_url, echo=False)
@@ -48,8 +49,7 @@ def health():
 @app.get("/tasks")
 def get_tasks():
     with Session(engine) as session:
-        tasks = session.exec(select(Task)).all()
-        return tasks
+        return session.exec(select(Task)).all()
 
 @app.get("/tasks/{task_id}")
 def get_task(task_id: int):
@@ -69,3 +69,27 @@ def create_task(task_data: TaskCreate):
         session.commit()
         session.refresh(new_task)
         return new_task
+
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, update: TaskUpdate):
+    if not update.title or not update.title.strip():
+        raise HTTPException(status_code=400, detail="Title is required")
+    with Session(engine) as session:
+        task = session.get(Task, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        task.title = update.title
+        task.done = update.done
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        return task
+
+@app.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int):
+    with Session(engine) as session:
+        task = session.get(Task, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        session.delete(task)
+        session.commit()
