@@ -1,6 +1,14 @@
 # Task API
 
-A simple in-memory CRUD API for managing tasks, built with FastAPI.
+A CRUD API for managing tasks, built with FastAPI and backed by a SQLite database.
+
+## Why SQLite
+
+SQLite was chosen because it requires no separate database server — the entire database lives in a single file (`tasks.db`) inside the project folder. This makes it ideal for a small project like this one: no installation, no configuration, and the database is created automatically the first time the app runs.
+
+## Where the database is stored
+
+The database file `tasks.db` is created in the project root (same folder as `main.py`) the first time the server starts. A `tasks` table is created automatically if it doesn't exist, and it's seeded with 3 example tasks only if the table is empty.
 
 ## Run it
 
