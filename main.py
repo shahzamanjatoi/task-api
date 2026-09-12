@@ -1,5 +1,6 @@
 from typing import Optional
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from sqlmodel import SQLModel, Field, create_engine, Session, select
 
 app = FastAPI(title="Task API", version="2.0")
@@ -9,6 +10,10 @@ class Task(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
     done: bool = False
+
+# ---- Request body model (for creating tasks) ----
+class TaskCreate(BaseModel):
+    title: str
 
 # ---- Database setup ----
 sqlite_file_name = "tasks.db"
@@ -53,3 +58,14 @@ def get_task(task_id: int):
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
+
+@app.post("/tasks", status_code=201)
+def create_task(task_data: TaskCreate):
+    if not task_data.title or not task_data.title.strip():
+        raise HTTPException(status_code=400, detail="Title is required")
+    with Session(engine) as session:
+        new_task = Task(title=task_data.title, done=False)
+        session.add(new_task)
+        session.commit()
+        session.refresh(new_task)
+        return new_task
