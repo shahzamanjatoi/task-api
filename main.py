@@ -6,6 +6,7 @@ from sqlmodel import SQLModel, Field, create_engine, Session, select
 app = FastAPI(title="Task API", version="2.0")
 
 class Task(SQLModel, table=True):
+    __tablename__ = "tasks"
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
     done: bool = False
