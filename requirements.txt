@@ -3,3 +3,4 @@ uvicorn[standard]
 sqlmodel
 python-dotenv
 psycopg2-binary
+supabase

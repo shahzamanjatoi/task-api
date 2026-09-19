@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from repository import PostgresRepository
+from auth import supabase
 
 load_dotenv()
 
@@ -25,6 +26,7 @@ class TaskUpdate(BaseModel):
 def on_startup():
     repo.create_tables()
     repo.seed_if_empty()
+    print("Server running and connected to Supabase")
 
 
 @app.get("/")
