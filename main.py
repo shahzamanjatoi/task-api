@@ -22,6 +22,11 @@ class TaskUpdate(BaseModel):
     done: bool
 
 
+class AuthCredentials(BaseModel):
+    email: str
+    password: str
+
+
 @app.on_event("startup")
 def on_startup():
     repo.create_tables()
@@ -38,6 +43,8 @@ def root():
 def health():
     return {"status": "ok"}
 
+
+# ---- Task CRUD routes (unchanged from A3) ----
 
 @app.get("/tasks")
 def get_tasks():
@@ -74,3 +81,36 @@ def delete_task(task_id: int):
     deleted = repo.delete(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
+
+
+# ---- Auth routes ----
+
+@app.post("/auth/signup", status_code=201)
+def signup(credentials: AuthCredentials):
+    if not credentials.email or not credentials.password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+    try:
+        result = supabase.auth.sign_up({
+            "email": credentials.email,
+            "password": credentials.password
+        })
+        return {"user": result.user}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/auth/login")
+def login(credentials: AuthCredentials):
+    if not credentials.email or not credentials.password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+    try:
+        result = supabase.auth.sign_in_with_password({
+            "email": credentials.email,
+            "password": credentials.password
+        })
+        return {
+            "access_token": result.session.access_token,
+            "refresh_token": result.session.refresh_token
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
