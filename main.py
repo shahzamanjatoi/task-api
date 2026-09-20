@@ -44,6 +44,16 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/public/info")
+def public_info():
+    return {"message": "Welcome stranger! This info is public."}
+
+
+@app.get("/protected/profile")
+def protected_profile():
+    raise HTTPException(status_code=401, detail="Access token required")
+
+
 # ---- Task CRUD routes (unchanged from A3) ----
 
 @app.get("/tasks")
