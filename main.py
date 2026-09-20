@@ -1,9 +1,10 @@
 import os
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from repository import PostgresRepository
 from auth import supabase
+from dependencies import get_current_user
 
 load_dotenv()
 
@@ -50,23 +51,20 @@ def public_info():
 
 
 @app.get("/protected/profile")
-def protected_profile(request: Request):
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Access token required")
+def protected_profile(user=Depends(get_current_user)):
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at
+    }
 
-    token = auth_header.split(" ")[1]
 
-    try:
-        result = supabase.auth.get_user(token)
-        user = result.user
-        return {
-            "id": user.id,
-            "email": user.email,
-            "created_at": user.created_at
-        }
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+@app.get("/protected/dashboard")
+def protected_dashboard(user=Depends(get_current_user)):
+    return {
+        "message": f"Welcome to your dashboard, {user.email}",
+        "id": user.id
+    }
 
 
 # ---- Task CRUD routes (unchanged from A3) ----
@@ -139,3 +137,11 @@ def login(credentials: AuthCredentials):
         }
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid login credentials")
+
+
+@app.post("/auth/logout", status_code=204)
+def logout(user=Depends(get_current_user)):
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
