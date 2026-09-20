@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from repository import PostgresRepository
@@ -50,8 +50,23 @@ def public_info():
 
 
 @app.get("/protected/profile")
-def protected_profile():
-    raise HTTPException(status_code=401, detail="Access token required")
+def protected_profile(request: Request):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Access token required")
+
+    token = auth_header.split(" ")[1]
+
+    try:
+        result = supabase.auth.get_user(token)
+        user = result.user
+        return {
+            "id": user.id,
+            "email": user.email,
+            "created_at": user.created_at
+        }
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 # ---- Task CRUD routes (unchanged from A3) ----
