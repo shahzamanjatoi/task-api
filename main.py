@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from repository import PostgresRepository
@@ -9,6 +10,8 @@ from dependencies import get_current_user
 load_dotenv()
 
 app = FastAPI(title="Task API", version="3.0")
+
+security = HTTPBearer()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 repo = PostgresRepository(DATABASE_URL)
@@ -51,7 +54,7 @@ def public_info():
 
 
 @app.get("/protected/profile")
-def protected_profile(user=Depends(get_current_user)):
+def protected_profile(user=Depends(get_current_user), _=Depends(security)):
     return {
         "id": user.id,
         "email": user.email,
@@ -60,7 +63,7 @@ def protected_profile(user=Depends(get_current_user)):
 
 
 @app.get("/protected/dashboard")
-def protected_dashboard(user=Depends(get_current_user)):
+def protected_dashboard(user=Depends(get_current_user), _=Depends(security)):
     return {
         "message": f"Welcome to your dashboard, {user.email}",
         "id": user.id
@@ -140,7 +143,7 @@ def login(credentials: AuthCredentials):
 
 
 @app.post("/auth/logout", status_code=204)
-def logout(user=Depends(get_current_user)):
+def logout(user=Depends(get_current_user), _=Depends(security)):
     try:
         supabase.auth.sign_out()
     except Exception:
