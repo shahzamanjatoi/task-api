@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from repository import PostgresRepository
 from auth import supabase
 from dependencies import get_current_user
+from schemas import TriageInput, TriageOutput, Category, Urgency, SuggestedTeam
 
 load_dotenv()
 
@@ -68,6 +69,21 @@ def protected_dashboard(user=Depends(get_current_user), _=Depends(security)):
         "message": f"Welcome to your dashboard, {user.email}",
         "id": user.id
     }
+
+
+# ---- Triage endpoint (Week 7 assignment) ----
+
+@app.post("/triage", response_model=TriageOutput)
+def triage(input_data: TriageInput):
+    if os.getenv("LLM_STUB") == "1":
+        return TriageOutput(
+            category=Category.other,
+            urgency=Urgency.low,
+            suggested_team=SuggestedTeam.support,
+            confidence=0.5,
+            reason="Stub mode: no model was called."
+        )
+    raise HTTPException(status_code=501, detail="Real model call not implemented yet")
 
 
 # ---- Task CRUD routes (unchanged from A3) ----
