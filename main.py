@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from openai import OpenAI
 from repository import PostgresRepository
 from auth import supabase
 from dependencies import get_current_user
@@ -16,6 +17,16 @@ security = HTTPBearer()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 repo = PostgresRepository(DATABASE_URL)
+
+llm_client = OpenAI(
+    base_url=os.environ["LLM_BASE_URL"],
+    api_key=os.environ["LLM_API_KEY"],
+)
+
+
+def load_prompt():
+    with open("prompts/triage-v1.md", "r") as f:
+        return f.read()
 
 
 class TaskCreate(BaseModel):
@@ -73,7 +84,7 @@ def protected_dashboard(user=Depends(get_current_user), _=Depends(security)):
 
 # ---- Triage endpoint (Week 7 assignment) ----
 
-@app.post("/triage", response_model=TriageOutput)
+@app.post("/triage")
 def triage(input_data: TriageInput):
     if os.getenv("LLM_STUB") == "1":
         return TriageOutput(
@@ -83,7 +94,21 @@ def triage(input_data: TriageInput):
             confidence=0.5,
             reason="Stub mode: no model was called."
         )
-    raise HTTPException(status_code=501, detail="Real model call not implemented yet")
+
+    system_prompt = load_prompt()
+
+    response = llm_client.chat.completions.create(
+        model=os.environ["LLM_MODEL"],
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": input_data.text},
+        ],
+    )
+
+    raw_text = response.choices[0].message.content
+    print(f"Raw model output: {raw_text}")
+    return {"raw_output": raw_text}
 
 
 # ---- Task CRUD routes (unchanged from A3) ----
