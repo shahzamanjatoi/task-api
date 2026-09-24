@@ -1,4 +1,6 @@
 import os
+import json as json_module
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel
@@ -7,7 +9,7 @@ from openai import OpenAI
 from repository import PostgresRepository
 from auth import supabase
 from dependencies import get_current_user
-from schemas import TriageInput, TriageOutput, Category, Urgency, SuggestedTeam
+from schemas import TriageInput, TriageOutput, Category, Urgency, SuggestedTeam, parse_and_validate
 
 load_dotenv()
 
@@ -23,10 +25,37 @@ llm_client = OpenAI(
     api_key=os.environ["LLM_API_KEY"],
 )
 
+PROMPT_VERSION = "triage-v1"
+
 
 def load_prompt():
     with open("prompts/triage-v1.md", "r") as f:
         return f.read()
+
+
+def call_model(system_prompt: str, user_text: str):
+    response = llm_client.chat.completions.create(
+        model=os.environ["LLM_MODEL"],
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+    )
+    return response.choices[0].message.content
+
+
+def quarantine(input_text: str, raw_output: str, error: str):
+    os.makedirs("logs", exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "prompt_version": PROMPT_VERSION,
+        "input": input_text,
+        "raw_output": raw_output,
+        "error": error,
+    }
+    with open("logs/quarantine.jsonl", "a") as f:
+        f.write(json_module.dumps(entry) + "\n")
 
 
 class TaskCreate(BaseModel):
@@ -84,7 +113,7 @@ def protected_dashboard(user=Depends(get_current_user), _=Depends(security)):
 
 # ---- Triage endpoint (Week 7 assignment) ----
 
-@app.post("/triage")
+@app.post("/triage", response_model=TriageOutput)
 def triage(input_data: TriageInput):
     if os.getenv("LLM_STUB") == "1":
         return TriageOutput(
@@ -97,18 +126,31 @@ def triage(input_data: TriageInput):
 
     system_prompt = load_prompt()
 
-    response = llm_client.chat.completions.create(
-        model=os.environ["LLM_MODEL"],
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": input_data.text},
-        ],
-    )
+    # First attempt
+    raw_text = call_model(system_prompt, input_data.text)
+    result, error = parse_and_validate(raw_text)
 
-    raw_text = response.choices[0].message.content
-    print(f"Raw model output: {raw_text}")
-    return {"raw_output": raw_text}
+    if result is not None:
+        return result
+
+    # Repair retry
+    repair_message = (
+        f"Your previous answer was rejected for this reason: {error}\n"
+        f"Your previous answer was: {raw_text}\n"
+        f"Return only corrected JSON matching the schema. No explanation, no code fence."
+    )
+    raw_text_retry = call_model(system_prompt, repair_message)
+    result, error = parse_and_validate(raw_text_retry)
+
+    if result is not None:
+        return result
+
+    # Give up cleanly
+    quarantine(input_data.text, raw_text_retry, error)
+    raise HTTPException(
+        status_code=422,
+        detail="Model could not produce a valid response after one repair attempt."
+    )
 
 
 # ---- Task CRUD routes (unchanged from A3) ----
