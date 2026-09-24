@@ -1,11 +1,13 @@
 import os
+import time
 import json as json_module
 from datetime import datetime, timezone
+import random
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, APITimeoutError, RateLimitError, APIStatusError
 from repository import PostgresRepository
 from auth import supabase
 from dependencies import get_current_user
@@ -23,9 +25,12 @@ repo = PostgresRepository(DATABASE_URL)
 llm_client = OpenAI(
     base_url=os.environ["LLM_BASE_URL"],
     api_key=os.environ["LLM_API_KEY"],
+    timeout=30.0,
+    max_retries=0,  # we handle retries ourselves, not the SDK's default of 2
 )
 
 PROMPT_VERSION = "triage-v1"
+MAX_CALL_RETRIES = 2
 
 
 def load_prompt():
@@ -33,16 +38,63 @@ def load_prompt():
         return f.read()
 
 
-def call_model(system_prompt: str, user_text: str):
-    response = llm_client.chat.completions.create(
-        model=os.environ["LLM_MODEL"],
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ],
-    )
-    return response.choices[0].message.content
+def log_cost(model, input_tokens, output_tokens, duration_ms, repaired):
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "prompt_version": PROMPT_VERSION,
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "duration_ms": duration_ms,
+        "repaired": repaired,
+    }
+    print(f"COST_LOG: {json_module.dumps(entry)}")
+
+
+def call_model_with_retry(system_prompt: str, user_text: str):
+    """Calls the model with timeout + retry on timeouts/429/5xx only. Never retries 400/401/403."""
+    attempt = 0
+    last_exception = None
+
+    while attempt <= MAX_CALL_RETRIES:
+        try:
+            start = time.time()
+            response = llm_client.chat.completions.create(
+                model=os.environ["LLM_MODEL"],
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+            )
+            duration_ms = int((time.time() - start) * 1000)
+            usage = response.usage
+            return response.choices[0].message.content, usage, duration_ms
+
+        except APITimeoutError as e:
+            last_exception = e
+            wait = (2 ** attempt) + random.uniform(0, 1)
+            time.sleep(wait)
+            attempt += 1
+
+        except RateLimitError as e:
+            last_exception = e
+            retry_after = getattr(e.response.headers, "get", lambda k: None)("Retry-After") if hasattr(e, "response") else None
+            wait = float(retry_after) if retry_after else (2 ** attempt) + random.uniform(0, 1)
+            time.sleep(wait)
+            attempt += 1
+
+        except APIStatusError as e:
+            if e.status_code >= 500:
+                last_exception = e
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(wait)
+                attempt += 1
+            else:
+                # 400, 401, 403, etc — never retry, fail fast
+                raise
+
+    raise last_exception
 
 
 def quarantine(input_text: str, raw_output: str, error: str):
@@ -124,12 +176,33 @@ def triage(input_data: TriageInput):
             reason="Stub mode: no model was called."
         )
 
+    if os.getenv("LLM_ENABLED", "true").lower() == "false":
+        return TriageOutput(
+            category=Category.other,
+            urgency=Urgency.low,
+            suggested_team=SuggestedTeam.support,
+            confidence=0.0,
+            reason="LLM disabled via kill switch; returning safe fallback."
+        )
+
     system_prompt = load_prompt()
 
-    # First attempt
-    raw_text = call_model(system_prompt, input_data.text)
-    result, error = parse_and_validate(raw_text)
+    try:
+        raw_text, usage, duration_ms = call_model_with_retry(system_prompt, input_data.text)
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="Model call timed out.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Model call failed: {str(e)}")
 
+    log_cost(
+        model=os.environ["LLM_MODEL"],
+        input_tokens=usage.prompt_tokens if usage else None,
+        output_tokens=usage.completion_tokens if usage else None,
+        duration_ms=duration_ms,
+        repaired=False,
+    )
+
+    result, error = parse_and_validate(raw_text)
     if result is not None:
         return result
 
@@ -139,13 +212,25 @@ def triage(input_data: TriageInput):
         f"Your previous answer was: {raw_text}\n"
         f"Return only corrected JSON matching the schema. No explanation, no code fence."
     )
-    raw_text_retry = call_model(system_prompt, repair_message)
-    result, error = parse_and_validate(raw_text_retry)
+    try:
+        raw_text_retry, usage_retry, duration_ms_retry = call_model_with_retry(system_prompt, repair_message)
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="Model call timed out during repair.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Model call failed during repair: {str(e)}")
 
+    log_cost(
+        model=os.environ["LLM_MODEL"],
+        input_tokens=usage_retry.prompt_tokens if usage_retry else None,
+        output_tokens=usage_retry.completion_tokens if usage_retry else None,
+        duration_ms=duration_ms_retry,
+        repaired=True,
+    )
+
+    result, error = parse_and_validate(raw_text_retry)
     if result is not None:
         return result
 
-    # Give up cleanly
     quarantine(input_data.text, raw_text_retry, error)
     raise HTTPException(
         status_code=422,
